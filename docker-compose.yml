@@ -1,0 +1,63 @@
+services:
+  # PostgreSQL 数据库
+  db:
+    image: postgres:15-alpine
+    container_name: zentea-license-db
+    restart: always
+    environment:
+      POSTGRES_USER: license_admin
+      POSTGRES_PASSWORD: license_secure_pwd_2025
+      POSTGRES_DB: zentea_license
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U license_admin -d zentea_license"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 授权服务后端
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: zentea-license-backend
+    restart: always
+    environment:
+      DATABASE_URL: postgresql+asyncpg://license_admin:license_secure_pwd_2025@db:5432/zentea_license
+      SECRET_KEY: your-super-secret-key-change-in-production
+      LICENSE_SERVER_URL: https://sq.jinghuatea.com
+    ports:
+      - "8001:8001"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # 管理后台前端
+  frontend-admin:
+    build:
+      context: ./frontend-admin
+      dockerfile: Dockerfile
+    container_name: zentea-license-admin
+    restart: always
+    ports:
+      - "3001:80"
+    depends_on:
+      - backend
+
+  # 用户门户前端
+  frontend-portal:
+    build:
+      context: ./frontend-portal
+      dockerfile: Dockerfile
+    container_name: zentea-license-portal
+    restart: always
+    ports:
+      - "3002:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
