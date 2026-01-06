@@ -105,16 +105,26 @@ build_frontend() {
     
     cd "$PROJECT_DIR"
     
+    # 确保目标目录存在
+    mkdir -p /var/www/zentea-license/admin
+    mkdir -p /var/www/zentea-license/portal
+    
     # 构建管理后台
     echo "[INFO] 构建管理后台..."
-    cd frontend-admin
+    cd "$PROJECT_DIR/frontend-admin"
     
     # 使用 Docker 构建（避免本地 Node 环境问题）
-    docker run --rm -v "$(pwd)":/app -w /app node:20-alpine sh -c "
+    docker run --rm -v "$PWD":/app -w /app node:20-alpine sh -c "
         npm config set registry https://registry.npmmirror.com
-        npm install
+        npm install --legacy-peer-deps
         npm run build
     "
+    
+    # 检查构建是否成功
+    if [ ! -d "dist" ]; then
+        echo "[ERROR] 管理后台构建失败"
+        exit 1
+    fi
     
     # 复制构建产物
     rm -rf /var/www/zentea-license/admin/*
@@ -124,11 +134,17 @@ build_frontend() {
     echo "[INFO] 构建用户门户..."
     cd "$PROJECT_DIR/frontend-portal"
     
-    docker run --rm -v "$(pwd)":/app -w /app node:20-alpine sh -c "
+    docker run --rm -v "$PWD":/app -w /app node:20-alpine sh -c "
         npm config set registry https://registry.npmmirror.com
-        npm install
+        npm install --legacy-peer-deps
         npm run build
     "
+    
+    # 检查构建是否成功
+    if [ ! -d "dist" ]; then
+        echo "[ERROR] 用户门户构建失败"
+        exit 1
+    fi
     
     # 复制构建产物
     rm -rf /var/www/zentea-license/portal/*

@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     RSA_PRIVATE_KEY_PATH: str = os.getenv("RSA_PRIVATE_KEY_PATH", "keys/private.pem")
     RSA_PUBLIC_KEY_PATH: str = os.getenv("RSA_PUBLIC_KEY_PATH", "keys/public.pem")
     
+    # 登录安全配置（防暴力破解）
+    LOGIN_MAX_ATTEMPTS: int = 5  # 最大尝试次数
+    LOGIN_LOCKOUT_MINUTES: int = 15  # 锁定时间（分钟）
+    
     class Config:
         env_file = ".env"
 
