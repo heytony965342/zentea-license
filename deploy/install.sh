@@ -140,14 +140,12 @@ configure_firewall() {
         if command -v firewall-cmd &> /dev/null; then
             firewall-cmd --permanent --add-service=http
             firewall-cmd --permanent --add-service=https
-            firewall-cmd --permanent --add-port=8001/tcp
             firewall-cmd --reload
         fi
     else
         if command -v ufw &> /dev/null; then
             ufw allow 80/tcp
             ufw allow 443/tcp
-            ufw allow 8001/tcp
         fi
     fi
     

@@ -5,13 +5,16 @@ from typing import Optional, List
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import delete
 from sqlmodel import select, func
 
 from app.core.database import get_session
 from app.core.response import success, error
+from app.core.security import get_password_hash
 from app.api.deps import get_current_admin
 from app.models.user import User
-from app.models.license import License
+from app.models.license import License, LicenseHeartbeat
+from app.models.order import Order
 from app.models.promo import PromoCampaign
 
 router = APIRouter()
@@ -112,6 +115,7 @@ async def get_customers(
                 "company_name": c.company_name,
                 "contact_name": c.contact_name,
                 "phone": c.phone,
+                "is_active": c.is_active,
                 "created_at": c.created_at.isoformat() if c.created_at else None,
             }
             for c in customers
@@ -153,6 +157,7 @@ async def get_customer_detail(
         "contact_name": customer.contact_name,
         "phone": customer.phone,
         "address": customer.address,
+        "is_active": customer.is_active,
         "created_at": customer.created_at.isoformat() if customer.created_at else None,
         "licenses": [
             {
@@ -167,6 +172,313 @@ async def get_customer_detail(
         ],
     })
 
+
+@router.post("/customers")
+async def create_customer(
+    data: dict,
+    session: AsyncSession = Depends(get_session),
+    _: User = Depends(get_current_admin),
+):
+    """创建客户"""
+    username = (data.get("username") or "").strip()
+    email = (data.get("email") or "").strip()
+    password = (data.get("password") or "").strip()
+
+    if not username or not email:
+        return error("请填写用户名和邮箱")
+
+    # 唯一性校验
+    exists_username = await session.execute(select(User).where(User.username == username))
+    if exists_username.scalar_one_or_none():
+        return error("用户名已被使用")
+
+    exists_email = await session.execute(select(User).where(User.email == email))
+    if exists_email.scalar_one_or_none():
+        return error("邮箱已被注册")
+
+    generated_password: Optional[str] = None
+    if not password:
+        # 不回显管理员输入的密码；若未填写则生成一次性初始密码供管理员抄录
+        import uuid
+        generated_password = f"ZT{uuid.uuid4().hex[:10]}"
+        password = generated_password
+
+    customer = User(
+        username=username,
+        email=email,
+        hashed_password=get_password_hash(password),
+        role="customer",
+        is_active=bool(data.get("is_active", True)),
+        company_name=data.get("company_name"),
+        contact_name=data.get("contact_name"),
+        phone=data.get("phone"),
+        address=data.get("address"),
+        created_at=datetime.utcnow(),
+        updated_at=None,
+    )
+    session.add(customer)
+    await session.commit()
+    await session.refresh(customer)
+
+    return success(
+        {
+            "id": customer.id,
+            "initial_password": generated_password,  # 仅当自动生成时返回
+        },
+        "创建成功",
+    )
+
+
+@router.put("/customers/{customer_id}")
+async def update_customer(
+    customer_id: int,
+    data: dict,
+    session: AsyncSession = Depends(get_session),
+    _: User = Depends(get_current_admin),
+):
+    """编辑客户"""
+    result = await session.execute(select(User).where(User.id == customer_id, User.role == "customer"))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        return error("客户不存在", code=404)
+
+    # 用户名/邮箱变更需校验唯一性
+    if "username" in data and data["username"] is not None:
+        new_username = str(data["username"]).strip()
+        if not new_username:
+            return error("用户名不能为空")
+        exists = await session.execute(select(User).where(User.username == new_username, User.id != customer_id))
+        if exists.scalar_one_or_none():
+            return error("用户名已被使用")
+        customer.username = new_username
+
+    if "email" in data and data["email"] is not None:
+        new_email = str(data["email"]).strip()
+        if not new_email:
+            return error("邮箱不能为空")
+        exists = await session.execute(select(User).where(User.email == new_email, User.id != customer_id))
+        if exists.scalar_one_or_none():
+            return error("邮箱已被注册")
+        customer.email = new_email
+
+    # 其他字段
+    for key in ["company_name", "contact_name", "phone", "address"]:
+        if key in data:
+            setattr(customer, key, data.get(key))
+
+    if "is_active" in data:
+        customer.is_active = bool(data.get("is_active"))
+
+    customer.updated_at = datetime.utcnow()
+    session.add(customer)
+    await session.commit()
+
+    return success({"id": customer.id}, "更新成功")
+
+
+@router.delete("/customers/{customer_id}")
+async def delete_customer(
+    customer_id: int,
+    session: AsyncSession = Depends(get_session),
+    _: User = Depends(get_current_admin),
+):
+    """删除客户（会同时清理其授权/订单/心跳记录）"""
+    result = await session.execute(select(User).where(User.id == customer_id, User.role == "customer"))
+    customer = result.scalar_one_or_none()
+    if not customer:
+        return error("客户不存在", code=404)
+
+    # 先清理关联数据，避免外键约束导致删除失败
+    lic_ids_res = await session.execute(select(License.id).where(License.user_id == customer_id))
+    license_ids = list(lic_ids_res.scalars().all())
+
+    if license_ids:
+        await session.execute(delete(LicenseHeartbeat).where(LicenseHeartbeat.license_id.in_(license_ids)))
+        # 订单里可能引用 license_id，也可能仅按 user_id 关联，统一按 user_id 清理
+
+    await session.execute(delete(Order).where(Order.user_id == customer_id))
+    await session.execute(delete(License).where(License.user_id == customer_id))
+
+    await session.delete(customer)
+    await session.commit()
+
+    return success(None, "删除成功")
+
+
+# ==================== 管理员管理 ====================
+
+@router.get("/admins")
+async def get_admins(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    session: AsyncSession = Depends(get_session),
+    _: User = Depends(get_current_admin),
+):
+    """获取管理员列表"""
+    offset = (page - 1) * page_size
+    result = await session.execute(
+        select(User)
+        .where(User.role == "admin")
+        .order_by(User.created_at.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
+    admins = result.scalars().all()
+
+    total = await session.execute(select(func.count()).select_from(User).where(User.role == "admin"))
+    total = total.scalar() or 0
+
+    return success({
+        "items": [
+            {
+                "id": a.id,
+                "username": a.username,
+                "email": a.email,
+                "is_active": a.is_active,
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+            }
+            for a in admins
+        ],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    })
+
+
+@router.post("/admins")
+async def create_admin(
+    data: dict,
+    session: AsyncSession = Depends(get_session),
+    _: User = Depends(get_current_admin),
+):
+    """创建管理员"""
+    username = (data.get("username") or "").strip()
+    email = (data.get("email") or "").strip()
+    password = (data.get("password") or "").strip()
+
+    if not username or not email or not password:
+        return error("请填写用户名、邮箱和密码")
+
+    exists_username = await session.execute(select(User).where(User.username == username))
+    if exists_username.scalar_one_or_none():
+        return error("用户名已被使用")
+
+    exists_email = await session.execute(select(User).where(User.email == email))
+    if exists_email.scalar_one_or_none():
+        return error("邮箱已被注册")
+
+    admin = User(
+        username=username,
+        email=email,
+        hashed_password=get_password_hash(password),
+        role="admin",
+        is_active=bool(data.get("is_active", True)),
+        created_at=datetime.utcnow(),
+        updated_at=None,
+    )
+    session.add(admin)
+    await session.commit()
+    await session.refresh(admin)
+
+    return success({"id": admin.id}, "创建成功")
+
+
+@router.put("/admins/{admin_id}")
+async def update_admin(
+    admin_id: int,
+    data: dict,
+    session: AsyncSession = Depends(get_session),
+    current_admin: User = Depends(get_current_admin),
+):
+    """编辑管理员"""
+    result = await session.execute(select(User).where(User.id == admin_id, User.role == "admin"))
+    admin = result.scalar_one_or_none()
+    if not admin:
+        return error("管理员不存在", code=404)
+
+    if "username" in data and data["username"] is not None:
+        new_username = str(data["username"]).strip()
+        if not new_username:
+            return error("用户名不能为空")
+        exists = await session.execute(select(User).where(User.username == new_username, User.id != admin_id))
+        if exists.scalar_one_or_none():
+            return error("用户名已被使用")
+        admin.username = new_username
+
+    if "email" in data and data["email"] is not None:
+        new_email = str(data["email"]).strip()
+        if not new_email:
+            return error("邮箱不能为空")
+        exists = await session.execute(select(User).where(User.email == new_email, User.id != admin_id))
+        if exists.scalar_one_or_none():
+            return error("邮箱已被注册")
+        admin.email = new_email
+
+    if "is_active" in data:
+        # 避免把自己禁用导致无法再管理
+        if admin_id == current_admin.id and not bool(data.get("is_active")):
+            return error("不能禁用当前登录管理员")
+        admin.is_active = bool(data.get("is_active"))
+
+    admin.updated_at = datetime.utcnow()
+    session.add(admin)
+    await session.commit()
+
+    return success({"id": admin.id}, "更新成功")
+
+
+@router.delete("/admins/{admin_id}")
+async def delete_admin(
+    admin_id: int,
+    session: AsyncSession = Depends(get_session),
+    current_admin: User = Depends(get_current_admin),
+):
+    """删除管理员"""
+    if admin_id == current_admin.id:
+        return error("不能删除当前登录管理员")
+
+    # 至少保留一个管理员
+    total_admins = await session.execute(select(func.count()).select_from(User).where(User.role == "admin"))
+    total_admins = total_admins.scalar() or 0
+    if total_admins <= 1:
+        return error("至少需要保留一个管理员")
+
+    result = await session.execute(select(User).where(User.id == admin_id, User.role == "admin"))
+    admin = result.scalar_one_or_none()
+    if not admin:
+        return error("管理员不存在", code=404)
+
+    await session.delete(admin)
+    await session.commit()
+
+    return success(None, "删除成功")
+
+
+@router.post("/admins/{admin_id}/password")
+async def set_admin_password(
+    admin_id: int,
+    data: dict,
+    session: AsyncSession = Depends(get_session),
+    _: User = Depends(get_current_admin),
+):
+    """修改管理员密码（重置/改密）"""
+    new_password = (data.get("new_password") or "").strip()
+    if not new_password:
+        return error("请填写新密码")
+    if len(new_password) < 6:
+        return error("密码至少 6 位")
+
+    result = await session.execute(select(User).where(User.id == admin_id, User.role == "admin"))
+    admin = result.scalar_one_or_none()
+    if not admin:
+        return error("管理员不存在", code=404)
+
+    admin.hashed_password = get_password_hash(new_password)
+    admin.updated_at = datetime.utcnow()
+    session.add(admin)
+    await session.commit()
+
+    return success({"id": admin.id}, "密码已更新")
 
 # ==================== 授权管理 ====================
 

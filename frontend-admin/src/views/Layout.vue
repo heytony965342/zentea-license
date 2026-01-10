@@ -32,6 +32,11 @@ const menuOptions = [
     icon: () => h(PeopleOutline),
   },
   {
+    label: '管理员设置',
+    key: 'Admins',
+    icon: () => h(PersonOutline),
+  },
+  {
     label: '授权管理',
     key: 'Licenses',
     icon: () => h(KeyOutline),

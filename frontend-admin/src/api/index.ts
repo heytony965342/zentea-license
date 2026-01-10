@@ -20,6 +20,37 @@ export const adminApi = {
   getCustomers: (params?: { page?: number; page_size?: number }) => 
     request.get('/admin/customers', params),
   getCustomer: (id: number) => request.get(`/admin/customers/${id}`),
+  createCustomer: (data: {
+    username: string
+    email: string
+    password?: string
+    company_name?: string
+    contact_name?: string
+    phone?: string
+    address?: string
+    is_active?: boolean
+  }) => request.post('/admin/customers', data),
+  updateCustomer: (id: number, data: {
+    username?: string
+    email?: string
+    company_name?: string
+    contact_name?: string
+    phone?: string
+    address?: string
+    is_active?: boolean
+  }) => request.put(`/admin/customers/${id}`, data),
+  deleteCustomer: (id: number) => request.delete(`/admin/customers/${id}`),
+
+  // 管理员
+  getAdmins: (params?: { page?: number; page_size?: number }) =>
+    request.get('/admin/admins', params),
+  createAdmin: (data: { username: string; email: string; password: string; is_active?: boolean }) =>
+    request.post('/admin/admins', data),
+  updateAdmin: (id: number, data: { username?: string; email?: string; is_active?: boolean }) =>
+    request.put(`/admin/admins/${id}`, data),
+  deleteAdmin: (id: number) => request.delete(`/admin/admins/${id}`),
+  setAdminPassword: (id: number, new_password: string) =>
+    request.post(`/admin/admins/${id}/password`, { new_password }),
   
   // 授权
   getLicenses: (params?: { 

@@ -2,10 +2,12 @@
 ZenTea License Server - 授权验证服务
 """
 from contextlib import asynccontextmanager
+import secrets
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.database import init_db
+from app.core.config import settings
 from app.api.v1.router import api_router
 # 导入所有模型以确保表被创建
 from app.models import user, license, order, promo, setting, page  # noqa: F401
@@ -36,30 +38,47 @@ async def create_default_admin():
         admin = result.scalar_one_or_none()
         
         if not admin:
+            username = (settings.ADMIN_USERNAME or "admin").strip()
+            email = (settings.ADMIN_EMAIL or "admin@zentea.local").strip()
+            password = (settings.ADMIN_PASSWORD or "").strip()
+
+            # 生产环境兜底：如果未显式配置密码或仍是弱默认值，则生成强随机密码（避免固定 admin123）
+            # 管理员后续可在后台自行新增/删改管理员或修改密码。
+            if settings.is_production and (not password or password == "admin123"):
+                password = secrets.token_urlsafe(18)  # ~24 chars
+                print("[SECURITY] 生产环境检测到未设置管理员强密码，已自动生成随机初始密码，请立即登录后台修改：")
+                print(f"[SECURITY] ADMIN_USERNAME={username}")
+                print(f"[SECURITY] ADMIN_PASSWORD={password}")
+
             admin = User(
-                username="admin",
-                email="admin@zentea.local",
-                hashed_password=get_password_hash("admin123"),
+                username=username,
+                email=email,
+                hashed_password=get_password_hash(password),
                 role="admin",
                 is_active=True,
             )
             session.add(admin)
             await session.commit()
-            print("✅ 默认管理员已创建: admin / admin123")
+            if not settings.is_production:
+                print(f"✅ 默认管理员已创建: {username} / {password}")
 
 
 app = FastAPI(
     title="ZenTea License Server",
     description="茗管家 ERP 软件授权验证服务",
     version="1.0.0",
+    # 生产环境建议关闭 docs/openapi（减少暴露面）
+    openapi_url=None if settings.is_production else "/openapi.json",
+    docs_url=None if settings.is_production else "/docs",
+    redoc_url=None if settings.is_production else "/redoc",
     lifespan=lifespan,
 )
 
 # CORS 配置
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=settings.cors_origins or [],
+    allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
     allow_methods=["*"],
     allow_headers=["*"],
 )

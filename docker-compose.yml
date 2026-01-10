@@ -29,6 +29,14 @@ services:
       DATABASE_URL: postgresql+asyncpg://license_admin:license_secure_pwd_2025@db:5432/zentea_license
       SECRET_KEY: your-super-secret-key-change-in-production
       LICENSE_SERVER_URL: https://sq.jinghuatea.com
+      ENV: production
+      # 生产环境请务必设置强管理员密码（首次启动会创建管理员）
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: please-set-strong-password
+      ADMIN_EMAIL: admin@zentea.local
+      # CORS 白名单：仅允许管理后台/门户域名访问（示例）
+      BACKEND_CORS_ORIGINS: '["http://localhost:3001","http://localhost:3002"]'
+      CORS_ALLOW_CREDENTIALS: "false"
     ports:
       - "8001:8001"
     depends_on:

@@ -36,6 +36,11 @@ check_config() {
         echo "[ERROR] 请修改数据库密码"
         exit 1
     fi
+
+    if [ -z "$ADMIN_PASSWORD" ] || [ "$ADMIN_PASSWORD" == "请修改为强密码" ]; then
+        echo "[ERROR] 请在 deploy/.env 中配置 ADMIN_PASSWORD（强密码）"
+        exit 1
+    fi
 }
 
 # 部署后端
@@ -48,7 +53,17 @@ deploy_backend() {
     cat > backend/.env << EOF
 DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
 SECRET_KEY=${SECRET_KEY}
+# 生产环境
+ENV=production
+# 对外授权 API 基地址（供 ERP/APP 调用）
 LICENSE_SERVER_URL=https://${DOMAIN_API}
+# 初始化管理员（首次启动会创建）
+ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+ADMIN_PASSWORD=${ADMIN_PASSWORD}
+ADMIN_EMAIL=${ADMIN_EMAIL:-admin@zentea.local}
+# CORS 白名单：允许 portal/admin 域名访问后端（含 http/https，便于先 HTTP 部署再上 HTTPS）
+BACKEND_CORS_ORIGINS=["http://${DOMAIN_ADMIN}","https://${DOMAIN_ADMIN}","http://${DOMAIN_PORTAL}","https://${DOMAIN_PORTAL}"]
+CORS_ALLOW_CREDENTIALS=${CORS_ALLOW_CREDENTIALS:-false}
 EOF
     
     # 创建生产用 docker-compose
@@ -81,7 +96,13 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       SECRET_KEY: ${SECRET_KEY}
+      ENV: production
       LICENSE_SERVER_URL: https://${DOMAIN_API}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@zentea.local}
+      BACKEND_CORS_ORIGINS: '["http://${DOMAIN_ADMIN}","https://${DOMAIN_ADMIN}","http://${DOMAIN_PORTAL}","https://${DOMAIN_PORTAL}"]'
+      CORS_ALLOW_CREDENTIALS: "${CORS_ALLOW_CREDENTIALS:-false}"
     ports:
       - "127.0.0.1:8001:8001"
     depends_on:
@@ -115,6 +136,7 @@ build_frontend() {
     
     # 使用 Docker 构建（避免本地 Node 环境问题）
     docker run --rm -v "$PWD":/app -w /app node:20-alpine sh -c "
+        rm -rf node_modules
         npm config set registry https://registry.npmmirror.com
         npm install --legacy-peer-deps
         npm run build
@@ -135,6 +157,7 @@ build_frontend() {
     cd "$PROJECT_DIR/frontend-portal"
     
     docker run --rm -v "$PWD":/app -w /app node:20-alpine sh -c "
+        rm -rf node_modules
         npm config set registry https://registry.npmmirror.com
         npm install --legacy-peer-deps
         npm run build
@@ -162,6 +185,11 @@ configure_nginx() {
 server {
     listen 80;
     server_name ${DOMAIN_API};
+
+    # 生产环境不建议对公网暴露 FastAPI 文档/Schema（减少攻击面）
+    location ~ ^/(docs|redoc|openapi\\.json)\$ {
+        return 404;
+    }
 
     location / {
         proxy_pass http://127.0.0.1:8001;
@@ -192,6 +220,10 @@ server {
     }
 
     location /api {
+        # 兜底：避免通过 /api/docs /api/openapi.json 间接访问后端文档
+        location ~ ^/api/(docs|redoc|openapi\\.json)\$ {
+            return 404;
+        }
         proxy_pass http://127.0.0.1:8001;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
@@ -215,6 +247,10 @@ server {
     }
 
     location /api {
+        # 兜底：避免通过 /api/docs /api/openapi.json 间接访问后端文档
+        location ~ ^/api/(docs|redoc|openapi\\.json)\$ {
+            return 404;
+        }
         proxy_pass http://127.0.0.1:8001;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
@@ -250,7 +286,8 @@ main() {
     echo "  管理后台: http://${DOMAIN_ADMIN}"
     echo "  用户门户: http://${DOMAIN_PORTAL}"
     echo ""
-    echo "默认管理员: admin / admin123"
+    echo "管理员账号: ${ADMIN_USERNAME:-admin}"
+    echo "管理员密码: （使用 deploy/.env 中配置的 ADMIN_PASSWORD；生产环境不建议使用弱密码）"
     echo ""
     echo "下一步: 运行 ./setup-ssl.sh 配置 HTTPS"
     echo ""
