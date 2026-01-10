@@ -1,26 +1,33 @@
 FROM python:3.11-slim
 
+# 设置环境变量
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+
 WORKDIR /app
 
-# 安装系统依赖
-RUN apt-get update && apt-get install -y \
+# 1. 替换 Debian 系统源为阿里云镜像（加速 apt-get）
+# 使用 sed 命令将默认源替换为 mirrors.aliyun.com
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# 安装 Python 依赖
-COPY requirements.txt .
-# 更换为清华大学 PyPI 镜像源，并升级 pip
-RUN pip install --upgrade pip setuptools wheel -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
-# 使用镜像源安装依赖
-RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
+# 2. 升级 pip 并预装基础构建工具
+# 已经通过 ENV 设置了全局 PIP_INDEX_URL，无需在命令中重复指定 -i
+RUN pip install --upgrade pip setuptools wheel
 
-# 复制应用代码
+# 3. 安装项目依赖
+# 这一步单独出来是为了充分利用 Docker 的层缓存
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+# 4. 复制应用代码
 COPY . .
 
-# 暴露端口
 EXPOSE 8001
 
-# 启动命令
 CMD ["python", "run.py"]
-
